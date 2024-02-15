@@ -1,0 +1,303 @@
+#if defined(ESP8266)
+  #include <ESP8266WiFi.h>  //ESP8266
+#endif /* ESP8266 */
+#if defined(ESP32)
+  #include <WiFi.h> //ESP32
+#endif /* ESP32 */
+#include <DHT.h>
+#include <WiFiUdp.h> // OTA / WiFi Upload
+#include <ArduinoOTA.h> // OTA / WiFi Upload
+
+#ifndef STASSID
+#define STASSID "HomeSweetHome"
+#define STAPSK  "*zdraFku ZZ*"
+#endif
+
+#define OTA_PASS  "135"
+#define DHTPIN 5     // Digital pin connected to the DHT sensor
+
+// Uncomment the type of sensor in use:
+#define DHTTYPE    DHT11     // DHT 11
+//#define DHTTYPE    DHT22     // DHT 22 (AM2302)
+//#define DHTTYPE    DHT21     // DHT 21 (AM2301)
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// current temperature & humidity, updated in loop()
+float t = 0.0;
+float h = 0.0;
+
+// Generally, you should use "unsigned long" for variables that hold time
+// The value will quickly become too large for an int to store
+unsigned long previousMillis = 0; // will store last time DHT was updated
+unsigned long relay_previousMillis = 0; // will store last time ralay was reset
+
+// Updates DHT readings every 10 seconds
+const long interval = 10;
+
+void WiFi_connect() {
+  const char* ssid = STASSID;
+  const char* password = STAPSK;
+  // Connect to WiFi network
+  Serial.print("\nConnecting to ");
+  Serial.print(ssid);
+
+  WiFi.mode(WIFI_STA); // OTA / WiFi Upload
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("connected");
+  // Print the IP address
+  //Serial.println(WiFi.localIP());
+}
+
+// OTA / WiFi Upload
+void OTA_Setup() {
+  // Port defaults to 8266
+  // ArduinoOTA.setPort(8266);
+
+  // Hostname defaults to esp8266-[ChipID]
+  // Hostname defaults to esp32-[MAC]
+  ArduinoOTA.setHostname("ESP8266 temp fan");
+
+  // No authentication by default
+  // ArduinoOTA.setPassword((const char *)"123");
+  ArduinoOTA.setPassword(OTA_PASS);
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("OTA Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nOTA End");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("OTA Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("OTA Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("OTA Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("OTA Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("OTA End Failed");
+  });
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready");
+}
+
+//pin 13; //white / bath fan
+//pin 12; //brown
+//pin 05; //orange SCL / temp sensor
+//pin 04; //yellow SDA
+//pin 00; // --free--
+//pin 02 - LED_BUILDIN
+//pin 01 - TX
+//pin 03 - RX
+//pin 14 && 16 ???
+//pin 15 - no ON ???
+
+int relays[] = {12, 04, 13};
+String relays_info[] =  {"NONE", "none", "Fan"};
+int relay_interval[] = {0, 0, 30}; // 10 sec
+
+bool automatically_set[] = {true, true, true};
+
+const int auto_start_humidity = 40;
+int bath_fan = 2; // 3rd position in "relays" variable
+
+// Create an instance of the server
+// specify the port to listen on as an argument
+WiFiServer server(80);
+
+void setup() {
+  Serial.begin(115200);
+
+  dht.begin();
+
+  // prepare GPIOs
+  for (byte pin = 0; pin < (sizeof(relays) / sizeof(relays[0])); pin++) {
+    pinMode(relays[pin], OUTPUT);
+    // set to OFF / NO
+    digitalWrite(relays[pin], 0);
+  }
+
+  WiFi_connect();
+  OTA_Setup();
+
+  // Start the server
+  server.begin();
+}
+
+void loop() {
+  ArduinoOTA.handle();
+
+  // Check if a client has connected
+  WiFiClient client = server.available();
+  if (!client) return;
+
+  // Wait until the client sends some data
+  //Serial.println("new client");
+  unsigned long timeout = millis() + 3000;
+  while (!client.available() && millis() < timeout) {
+    delay(1);
+  }
+  if (millis() > timeout) {
+    Serial.println("timeout");
+    client.flush();
+    client.stop();
+    return;
+  }
+
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval * 1000) {
+    // save the last time you updated the DHT values
+    previousMillis = currentMillis;
+    // Read temperature as Celsius (the default)
+    float newT = dht.readTemperature();
+    // Read temperature as Fahrenheit (isFahrenheit = true)
+    //float newT = dht.readTemperature(true);
+    // if temperature read failed, don't change t value
+    if (isnan(newT)) {
+      Serial.println("Failed to read from DHT sensor!");
+    } else {
+      t = newT;
+      Serial.println(t);
+    }
+    // Read Humidity
+    float newH = dht.readHumidity();
+    // if humidity read failed, don't change h value 
+    if (isnan(newH)) {
+      Serial.println("Failed to read from DHT sensor!");
+    } else {
+      h = newH;
+      Serial.println(h);
+    }
+  }
+
+  if (automatically_set[bath_fan] && h >= auto_start_humidity) {
+    // save the last time you updated the relay values
+    relay_previousMillis = currentMillis;
+    digitalWrite(relays[bath_fan], true);
+  } else {
+    if (automatically_set[bath_fan] && currentMillis - relay_previousMillis >= (relay_interval[bath_fan]*1000)) digitalWrite(relays[bath_fan], false);
+  }
+
+  // Read the first line of the request
+  String req = client.readStringUntil('\r');
+  Serial.println(req);
+  //client.flush();
+
+  if (req.indexOf(" / ") == 3 || req.indexOf(" /relay/") == 3 || req.indexOf(" /auto/") == 3) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println();
+    client.println("<!DOCTYPE HTML>\n<html>\n\t<head>");
+    client.println("\t\t<title>Bath</title>\n"
+      "\t\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+      "\t\t<link rel=\"stylesheet\" href=\"https://use.fontawesome.com/releases/v5.7.2/css/all.css\"\n"
+      "\t\t\tintegrity=\"sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr\" crossorigin=\"anonymous\">\n"
+      "\t\t<style>\n"
+      "\t\t\thtml {\n"
+      "\t\t\t\tfont-family: Arial;\n"
+      "\t\t\t\tdisplay: inline-block;\n"
+      "\t\t\t\tmargin: 0px auto;\n"
+      "\t\t\t\ttext-align: center;\n"
+      "\t\t\t}\n"
+      "\t\t\th2 { font-size: 3.0rem; }\n"
+      "\t\t\tp { font-size: 3.0rem; }\n"
+      "\t\t\t.units { font-size: 1.0rem; }\n"
+      "\t\t\t.dht-labels {\n"
+      "\t\t\t\tfont-size: 1.5rem;\n"
+      "\t\t\t\tvertical-align: middle;\n"
+      "\t\t\t\tpadding-bottom: 15px;\n"
+      "\t\t\t}\n"
+      "\t\t</style>");
+    client.print("\t\t<meta http-equiv=\"refresh\" content=\"10; url = http://");
+    client.print(WiFi.localIP().toString());
+    client.println("\">\n\t</head>\n\t<body>");
+    client.println("\t\t<table align=\"center\">");
+    client.print("\t\t\t<tr>\n\t\t\t\t<td align=\"left\">\n"
+      "\t\t\t\t\t<i class=\"fas fa-thermometer-half\" style=\"color:#059e8a;\"></i>\n"
+      "\t\t\t\t\t<span class=\"dht-labels\">Temperature</span>\n\t\t\t\t</td>\n"
+      "\t\t\t\t<td colspan=2 align=\"left\">\n\t\t\t\t\t<span id=\"temperature\">");
+    client.print(t);
+    client.print("</span>\n"
+      "\t\t\t\t\t<sup class=\"units\">&deg;C</sup>\n"
+      "\t\t\t\t</td>\n\t\t\t</tr>\n"
+      "\t\t\t<tr>\n\t\t\t\t<td align=\"left\">\n"
+      "\t\t\t\t\t<i class=\"fas fa-tint\" style=\"color:#00add6;\"></i>\n"
+      "\t\t\t\t\t<span class=\"dht-labels\">Humidity</span>\n\t\t\t\t</td>\n"
+      "\t\t\t\t<td colspan=2 align=\"left\">\n\t\t\t\t\t<span id=\"humidity\">");
+    client.print((int)h);
+    client.println("</span>\n"
+      "\t\t\t\t\t<sup class=\"units\">%</sup>\n"
+      "\t\t\t\t</td>\n\t\t\t</tr>");
+    client.println("\t\t\t<tr><td colspan=3>&nbsp;</td></tr>");
+    client.println("\t\t\t<tr>\n\t\t\t\t<td>&nbsp;</td>\n\t\t\t\t<td width=\"40px\">&nbsp;</td>\n\t\t\t\t<td width=\"40px\">Auto</td>\n\t\t\t</tr>");
+
+    // Match the request
+    String st_relay_num, st_relay_status;
+    int int_relay_num, int_relay_status;
+    if ( req.indexOf(" /auto/") == 3 ) {
+      st_relay_num = req[10];
+      st_relay_status = req[12];
+    } else {
+      st_relay_num = req[11];
+      st_relay_status = req[13];
+    }
+    int_relay_num = st_relay_num.toInt();
+    int_relay_status = st_relay_status.toInt();
+
+    for (byte pin = 0; pin < (sizeof(relays) / sizeof(relays[0])); pin++) {
+      if ( req.indexOf(" /relay/" + pin) == 3 ) { 
+        digitalWrite(relays[int_relay_num], int_relay_status);
+        automatically_set[int_relay_num] = false;
+      }
+      if ( req.indexOf(" /auto/" + pin) == 3 ) { 
+        relay_previousMillis = currentMillis;
+        automatically_set[int_relay_num] = int_relay_status;
+      }
+
+      client.printf("\t\t\t<tr>\n\t\t\t\t<td align=\"left\"><span class=\"dht-labels\">Relay %d (", pin + 1, relays[pin]);
+      client.print(relays_info[pin]);
+      client.println(")</span>&nbsp;</td>");
+      // status
+      if ( digitalRead(relays[pin]) ) {
+        client.printf("\t\t\t\t<td><a href=\"/relay/%d/0\"><i class=\"fas fa-lightbulb\" style=\"color:#F5F33F;\"></i></a></td>\n", pin);
+      } else {
+        client.printf("\t\t\t\t<td><a href=\"/relay/%d/1\"><i class=\"fas fa-lightbulb\" style=\"color:#E4E4E4;\"></i></a></td>\n", pin);
+      }
+      // set automatically
+      if ( automatically_set[pin] ) {
+        client.printf("\t\t\t\t<td><a href=\"/auto/%d/0\"><i class=\"fas fa-toggle-on\" style=\"color:#00add6;\"></i></a></td>\n", pin);
+      } else {
+        client.printf("\t\t\t\t<td><a href=\"/auto/%d/1\"><i class=\"fas fa-toggle-off\" style=\"color:#F78484;\"></i></a></td>\n", pin);
+      }
+      client.println("\t\t\t</tr>");
+    }
+    client.println("\t\t</table>");
+//    client.println("\t\t<p><a href=\"/#restart\">"
+//                    "<i class=\"fas fa-meh-rolling-eyes\" style=\"color:#EDEC78;\"></i>"
+//                    "<i class=\"fas fa-screwdriver\" style=\"color:gray;\"></i>"
+//                    "<i class=\"fas fa-heartbeat\" style=\"color:red;\"></i>"
+//                    "<i class=\"fas fa-sync\" style=\"color:green;\"></i>"
+//                    "</a></p>");
+  } else if (req.indexOf(" /restart ") == 3 ) {
+    ESP.restart();
+  } else {
+    Serial.println("invalid request");
+    client.println("HTTP/1.1 404 Not Found");
+    client.println("Content-Type: text/html");
+    client.println();
+    client.println("<!DOCTYPE HTML>\r\n<html><body>Not found</body></html>");
+    return;
+  }
+
+  client.print("\t</body>\n</html>");
+  // Send the response to the client
+  //client.flush();
+  delay(1);
+}

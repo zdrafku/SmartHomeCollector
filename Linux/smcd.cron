@@ -1,0 +1,5 @@
+# /etc/cron.d/smcd.cron
+* * * * * root ping_loss=$(ping -c10 -q 8.8.8.8 |awk '/loss/ {print $4}') ; if [ $ping_loss -lt 8 ]; then echo "$(date) - loss $ping_loss" >> /data/ping_loss.log; fi
+0 3 * * * root mysqlcheck -o sm_collector
+@reboot root ifconfig wlan0:0 192.168.1.22 netmask 255.255.255.0 up
+@reboot root ifconfig wlan0:1 192.168.1.42 netmask 255.255.255.0 up

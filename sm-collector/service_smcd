@@ -1,0 +1,58 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:		smcd
+# Required-Start:	$all
+# Required-Stop:
+# Default-Start:	3 4 5
+# Default-Stop:
+# Short-Description:	Smart Home Collector
+### END INIT INFO
+# chkconfig: 345 99 01
+# description: Smart Home Collector
+
+conf_file="/data/sm-collector/smcd.conf"
+while IFS= read -r line
+do
+	declare "`awk -F= '{print $1}' <<<$line`"="`awk -F= '{print $2}' <<<$line`"
+done < "$conf_file"
+
+date_formated=$(date +"[%F %R:%S %Z]")
+
+case "$1" in
+	start)
+		/data/sm-collector/smcd.pl
+		if [ $? -eq 0 ]; then
+			echo "Service started. Check logs: $log_file"
+		else 
+			echo "Failed starting ${service}"
+		fi
+	;;
+	stop)
+		if [ -f $pid_file ]; then
+			ps axwu |grep -q $(<$pid_file).*${process_name}
+			if [ $? -eq "0" ]; then
+				kill -9 $(<$pid_file);
+				echo -e "$date_formated Service stopped!!" >> $log_file
+				echo "Service stopped!"
+			else
+				echo "The service is not running. Nothing to stop."
+			fi
+			unlink $pid_file 2> /dev/null
+		else
+			echo "PID file not found!"
+		fi
+	;;
+	restart)
+		$0 stop
+		$0 start
+	;;
+	status)
+		ps axwu |grep -q $(<$pid_file).*SmartHome-CollectorD$
+		if [ $? ]; then
+			echo -e "Up and running!\nPID: $(<$pid_file)"
+		fi
+	;;
+	*)
+		echo "Usage: $0 {start|stop|restart|status}"
+		exit 2
+esac
